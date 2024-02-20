@@ -264,9 +264,10 @@ func (woc *wfOperationCtx) executeDAG(ctx context.Context, nodeName string, tmpl
 	}
 
 	// kick off execution of each target task asynchronously
+	scope := createScope(tmpl)
 	onExitCompleted := true
 	for _, taskName := range targetTasks {
-		woc.executeDAGTask(ctx, dagCtx, taskName)
+		woc.executeDAGTask(ctx, dagCtx, scope, taskName)
 
 		// It is possible that target tasks are not reconsidered (i.e. executeDAGTask is not called on them) once they are
 		// complete (since the DAG itself will have succeeded). To ensure that their exit handlers are run we also run them here. Note that
@@ -320,7 +321,6 @@ func (woc *wfOperationCtx) executeDAG(ctx context.Context, nodeName string, tmpl
 	}
 
 	// set outputs from tasks in order for DAG templates to support outputs
-	scope := createScope(tmpl)
 	for _, task := range tmpl.DAG.Tasks {
 		taskNode := dagCtx.getTaskNode(task.Name)
 		if taskNode == nil {
@@ -402,7 +402,7 @@ func (woc *wfOperationCtx) updateOutboundNodesForTargetTasks(dagCtx *dagContext,
 }
 
 // executeDAGTask traverses and executes the upward chain of dependencies of a task
-func (woc *wfOperationCtx) executeDAGTask(ctx context.Context, dagCtx *dagContext, taskName string) {
+func (woc *wfOperationCtx) executeDAGTask(ctx context.Context, dagCtx *dagContext, scope *wfScope, taskName string) {
 	if _, ok := dagCtx.visited[taskName]; ok {
 		return
 	}
@@ -439,6 +439,24 @@ func (woc *wfOperationCtx) executeDAGTask(ctx context.Context, dagCtx *dagContex
 			}
 		}
 
+		// pre-process input parameters to interpretate expressions
+		newTmpl := tmpl.DeepCopy()
+		for i, inParam := range newTmpl.Inputs.Parameters {
+			if inParam.ValueFrom != nil && inParam.ValueFrom.Expression != "" {
+				// get input parameter from expression
+				err := setParamValueFromFromValue(&inParam, scope)
+				if err != nil {
+					log.Error("Failed to interpret input parameter expression.")
+					woc.markNodeError(node.Name, err)
+					return
+				}
+
+				// overwrite parameter
+				newTmpl.Inputs.Parameters[i] = inParam
+			}
+		}
+
+		// process input args
 		processedTmpl, err := common.ProcessArgs(tmpl, &task.Arguments, woc.globalParams, map[string]string{}, true, woc.wf.Namespace, woc.controller.configMapInformer.GetIndexer())
 		if err != nil {
 			woc.markNodeError(node.Name, err)
@@ -510,7 +528,7 @@ func (woc *wfOperationCtx) executeDAGTask(ctx context.Context, dagCtx *dagContex
 	if dagCtx.GetTaskDependsLogic(taskName) != "" {
 		// Recurse into all of this node's dependencies
 		for _, dep := range taskDependencies {
-			woc.executeDAGTask(ctx, dagCtx, dep)
+			woc.executeDAGTask(ctx, dagCtx, scope, dep)
 		}
 		execute, proceed, err := dagCtx.evaluateDependsLogic(taskName)
 		if err != nil {

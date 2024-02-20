@@ -2859,17 +2859,10 @@ func getTemplateOutputsFromScope(tmpl *wfv1.Template, scope *wfScope) (*wfv1.Out
 			if param.ValueFrom == nil {
 				return nil, fmt.Errorf("output parameters must have a valueFrom specified")
 			}
-			val, err := scope.resolveParameter(param.ValueFrom)
+			err := setParamValueFromFromValue(&param, scope)
 			if err != nil {
-				// We have a default value to use instead of returning an error
-				if param.ValueFrom.Default != nil {
-					val = param.ValueFrom.Default.String()
-				} else {
-					return nil, err
-				}
+				return nil, err
 			}
-			param.Value = wfv1.AnyStringPtr(val)
-			param.ValueFrom = nil
 			outputs.Parameters = append(outputs.Parameters, param)
 		}
 	}
@@ -2893,6 +2886,22 @@ func getTemplateOutputsFromScope(tmpl *wfv1.Template, scope *wfScope) (*wfv1.Out
 		}
 	}
 	return &outputs, nil
+}
+
+// move fromValue interpretation to value
+func setParamValueFromFromValue(p *wfv1.Parameter, scope *wfScope) error {
+	val, err := scope.resolveParameter(p.ValueFrom)
+	if err != nil {
+		// We have a default value to use instead of returning an error
+		if p.ValueFrom.Default != nil {
+			val = p.ValueFrom.Default.String()
+		} else {
+			return err
+		}
+	}
+	p.Value = wfv1.AnyStringPtr(val)
+	p.ValueFrom = nil
+	return nil
 }
 
 func generateOutputResultRegex(name string, parentTmpl *wfv1.Template) (string, string) {
